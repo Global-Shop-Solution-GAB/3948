@@ -1,0 +1,206 @@
+Program.Sub.ScreenSU.Start
+Program.Sub.ScreenSU.End
+
+Program.Sub.Preflight.Start
+
+Variable.UDT.ROUTER.Define("ROUTER",String,ROUTER)
+
+Variable.uGlobal.uRouter.Declare("ROUTER")
+Variable.UDT.OTHER.Define("QUANTITY",Float)
+Variable.UDT.OTHER.Define("CODE_SOURCE",String)
+Variable.UDT.OTHER.Define("PART_WC_OUTSIDE",String)
+Variable.UDT.OTHER.Define("UM_INVENTORY",String)
+Variable.UDT.OTHER.Define("ROUTER",String,ROUTER)
+
+Variable.uGlobal.uOTHER.Declare("OTHER")
+Program.Sub.Preflight.End
+
+Program.Sub.Main.Start
+F.Intrinsic.Control.SetErrorHandler("Main_Err")
+F.Intrinsic.Control.ClearErrors
+
+'date:6/15/15
+'coded by: WAW
+'This is a custom GAB script that will be a run once process with a BOM upload. Taking all new materials that exist on a given router but do not exist on
+'the associated BOM and adding them to the associated BOM via a BOM upload
+
+'open connection to the database
+F.ODBC.Connection!con.OpenConnection(V.Ambient.PDSN,V.Ambient.PUser,V.Ambient.PPass)
+
+'declare variables
+V.Local.sError.Declare(String)
+V.Local.ssql.Declare(String)
+V.Local.srouter.Declare(String)
+V.Local.irouter.Declare(Long)
+V.Local.sfilepath.Declare(String)
+V.Local.i.Declare(Long)
+V.Local.sret.Declare(String)
+V.Local.stemp.Declare(String)
+V.Local.iret.Declare(Long)
+V.Local.bexists.Declare(Boolean)
+V.Local.stext.Declare(String)
+V.Local.sfulltemp.Declare(String)
+V.Local.sparam.Declare(String)
+V.Local.irouter2.Declare(Long)
+V.Local.ideletecount.Declare(Long)
+
+'redim the OTHER udt
+V.uGlobal.uOTHER.Redim(-1,-1)
+
+'create the files directory for the text file
+F.Intrinsic.String.Concat(V.Caller.FilesDir,"\BOMC.txt",V.Local.sfilepath)
+
+'Get all the routers
+F.Intrinsic.String.Build("Select Distinct ROUTER from ROUTER_LINE where ROUTER <> '{0}'","",V.Local.ssql)
+F.ODBC.Connection!con.OpenLocalRecordsetRO("rstRouter",V.Local.ssql)
+F.Intrinsic.control.If(V.ODBC.con!rstRouter.EOF,<>,True)
+	'load the OTHER udt with the routers found
+	F.Intrinsic.Variable.LoadUDTFromRecordset("con","rstRouter","uGlobal.uRouter","false",1)
+F.Intrinsic.Control.EndIf
+'close the connection for the router query
+F.ODBC.con!rstRouter.Close
+
+F.Intrinsic.Control.For(V.Local.ideletecount,V.uGlobal.urouter.LBound,V.uGlobal.urouter.UBound,1)
+
+F.Intrinsic.String.Build("SELECT '{0}' as ROUTER, V_ROUTER_LINE.PART_WC_OUTSIDE, V_ROUTER_LINE.RUN_TIME, V_ROUTER_LINE.UM_INVENTORY FROM V_ROUTER_LINE WHERE V_ROUTER_LINE.ROUTER = '{0}' AND V_ROUTER_LINE.LMO = '{1}' AND V_ROUTER_LINE.PART_WC_OUTSIDE NOT IN (SELECT V_BOM_MSTR.PART FROM V_BOM_MSTR  RIGHT OUTER JOIN V_ROUTER_LINE ON V_ROUTER_LINE.ROUTER = V_BOM_MSTR.PARENT WHERE V_ROUTER_LINE.LMO = '{2}' AND V_ROUTER_LINE.ROUTER = '{3}' AND V_BOM_MSTR.PART <> '{4}' GROUP BY V_BOM_MSTR.PART)",V.uGlobal.uRouter(V.Local.ideletecount)!ROUTER,"M","M",V.uglobal.uRouter(v.Local.ideletecount)!ROUTER,"",V.Local.ssql)
+
+F.ODBC.Connection!con.OpenLocalRecordsetRO("rstDELETE",V.Local.ssql)
+F.Intrinsic.Control.If(V.ODBC.con!rstDELETE.EOF,<>,True)
+	'set the UDT field references
+	F.Intrinsic.Variable.SetUDTFieldReference(V.uGlobal.uOTHER!PART_WC_OUTSIDE,"PART_WC_OUTSIDE")
+	F.Intrinsic.Variable.SetUDTFieldReference(V.uGlobal.uOTHER!QUANTITY,"RUN_TIME")
+	F.Intrinsic.Variable.SetUDTFieldReference(V.uGlobal.uOTHER!UM_INVENTORY,"UM_INVENTORY")
+	F.Intrinsic.Variable.SetUDTFieldReference(V.uGlobal.uOTHER!ROUTER,"ROUTER")
+	F.Intrinsic.Control.If(V.uGlobal.uOTHER.UBound,=,-1)
+		'load the data to the UDT
+		F.Intrinsic.Variable.LoadUDTFromRecordset("con","rstDelete","uglobal.uOTHER",False)
+	F.Intrinsic.Control.Else
+		F.Intrinsic.Variable.LoadUDTFromRecordset("con","rstDelete","uglobal.uOTHER",True)
+	F.Intrinsic.Control.EndIf
+	F.ODBC.con!rstdelete.Close
+F.Intrinsic.Control.Else
+		'flag ordinals of the routers we don't need to delete later
+		F.Intrinsic.variable.udtflagordinal(V.uGlobal.urouter,True,V.Local.ideletecount)
+	'close the connection after deletion
+	F.ODBC.con!rstdelete.Close
+F.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.Next(V.Local.ideletecount)
+
+'delete flagged ordinals
+F.Intrinsic.Variable.UDTDeleteFlagged(V.uGlobal.urouter)
+
+'loop through the UDT and query the CODE_SOURCE from INVENTORY_MST2 to store int he UDT
+F.Intrinsic.Control.For(V.Local.irouter2,V.uGlobal.uOTHER.LBound,V.uglobal.uOTHER.UBound,1)
+	F.Intrinsic.String.Build("SELECT CODE_SOURCE from INVENTORY_MST2 where PART = '{0}'",V.uglobal.uOTHER(v.Local.irouter2)!PART_WC_OUTSIDE,V.Local.ssql)
+	F.ODBC.connection!con.OpenLocalRecordsetRO("rstCode",V.Local.ssql)
+	F.Intrinsic.Variable.SetUDTFieldReference(V.uGlobal.uOTHER!CODE_SOURCE,"CODE_SOURCE")
+	'if the end of file status is equal to false set CODE_SOURCE within the UDT
+	F.Intrinsic.Control.If(V.ODBC.con!rstCode.EOF,<>,True)
+		V.uGlobal.uOTHER(v.Local.irouter2)!CODE_SOURCE.Set(V.ODBC.con!rstCode.FieldValTrim!CODE_SOURCE)
+	F.Intrinsic.Control.EndIf
+	F.ODBC.con!rstCode.Close
+F.Intrinsic.Control.Next(V.Local.irouter2)
+
+'loop through the OTHERR UDT and write the upload file to BOMC.txt
+F.Intrinsic.Control.For(V.Local.i,V.uGlobal.uother.LBound,V.uglobal.uother.UBound,1)
+	F.Intrinsic.String.Build("SELECT PARENT FROM V_BOM_MSTR where PARENT = '{0}' and PART = '{1}'",V.uGlobal.uOther(v.Local.i)!ROUTER,V.uGlobal.uOther(v.Local.i)!PART_WC_OUTSIDE,V.Local.ssql)
+	F.ODBC.Connection!con.OpenRecordsetRO("rstWrite",V.local.ssql)
+	F.Intrinsic.Control.If(V.ODBC.con!rstWrite.EOF,=,True)
+		'parent
+		F.Intrinsic.String.RPad(V.uGlobal.uOther(v.Local.i)!ROUTER," ",20,V.Local.sret)
+		F.Intrinsic.String.Concat(V.Local.sret,,V.Local.stemp)
+
+		'component
+		F.Intrinsic.String.RPad(V.uGlobal.uother(v.Local.i)!PART_WC_OUTSIDE," ",20,V.Local.sret)
+		F.Intrinsic.String.Concat(V.Local.stemp,V.Local.sret,V.Local.stemp)
+
+		'Quantity
+		F.Intrinsic.Math.ConvertToFloat(V.uGlobal.uother!QUANTITY,V.Local.iret)
+		F.Intrinsic.Math.Round(V.Local.iret,2,V.Local.iret)
+		F.Intrinsic.String.ConvertToString(V.Local.iret,V.Local.iret)
+		F.Intrinsic.String.IsInString(V.uGlobal.uother(v.Local.i)!QUANTITY,".",True,V.Local.bexists)
+		F.Intrinsic.Control.If(V.Local.bexists,<>,True)
+			F.Intrinsic.String.Concat(V.uGlobal.uother(v.Local.i)!QUANTITY,".00",V.Local.sret)
+		F.Intrinsic.Control.EndIf
+		F.Intrinsic.String.Split(V.Local.sret,".",V.Local.stext)
+		F.Intrinsic.String.Len(V.Local.stext(1),V.Local.iret)
+		F.intrinsic.Control.If(V.Local.iret,=,1)
+			F.Intrinsic.String.RPad(V.Local.stext(1),"0",2,V.Local.sret)
+			F.Intrinsic.String.Concat(V.Local.stext(0),".",V.Local.sret,V.Local.sret)
+		F.Intrinsic.Control.Else
+			F.Intrinsic.String.Concat(V.Local.stext(0),".",V.Local.stext(1),V.Local.sret)
+		F.Intrinsic.Control.EndIf
+		F.Intrinsic.String.LPad(V.Local.sret,"0",16,V.Local.sret)
+		F.Intrinsic.String.Concat(V.Local.stemp,V.Local.sret,V.Local.stemp)
+
+		'unit of measure
+		F.Intrinsic.String.RPad(V.uGlobal.uother(v.Local.i)!UM_INVENTORY," ",2,V.Local.sret)
+		F.Intrinsic.String.Concat(V.Local.stemp,V.Local.sret,V.Local.stemp)
+		F.Intrinsic.String.RPad(V.Local.stemp," ",202,V.Local.stemp)
+
+		'source
+		F.intrinsic.String.Concat(V.Local.stemp,V.uGlobal.uother(v.Local.i)!CODE_SOURCE.Trim,V.Local.stemp)
+
+		'write to sFullTemp variable that will go to BOMC.txt
+		F.Intrinsic.Control.If(V.local.i,=,V.uGlobal.uOTHER.UBound)
+				F.Intrinsic.String.Concat(V.Local.sfulltemp,V.Local.stemp,V.Local.sfulltemp)
+		F.intrinsic.Control.Else
+			F.Intrinsic.String.Concat(V.Local.sfulltemp,V.Local.stemp,V.Ambient.NewLine,V.Local.sfulltemp)
+		F.Intrinsic.Control.EndIf
+	F.Intrinsic.Control.EndIf
+
+'close connection
+F.ODBC.con!rstWrite.Close
+
+F.intrinsic.control.next(V.Local.i)
+
+F.intrinsic.Control.If(V.Local.sfulltemp.Trim,<>,"")
+	'build the text file
+	F.Intrinsic.File.String2File(V.Local.sfilepath,V.Local.sfulltemp)
+	F.Intrinsic.String.Concat(V.Caller.CompanyCode,"1","UPLBOMC",V.Local.sparam)
+	'launch the upload without the user being able to visually see it
+	F.Intrinsic.Task.LaunchGSSSync("UPL001A","-c",V.Local.sparam)
+F.Intrinsic.Control.EndIf
+
+'give a message to the user to let them know the process is complete and the upload is finished
+F.Intrinsic.UI.Msgbox("Upload Complete")
+
+F.ODBC.Connection!con.Close
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("Main_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_3948_RM_RTR_TO_BOM.gas",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	F.Intrinsic.Control.CallSub(Unload)
+Function.Intrinsic.Control.EndIf
+
+
+Program.Sub.Main.End
+
+Program.Sub.Unload.Start
+F.Intrinsic.Control.SetErrorHandler("Unload_Err")
+F.Intrinsic.Control.ClearErrors
+
+V.Local.sError.Declare(String)
+
+F.Intrinsic.Control.End
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("Unload_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_3948_RM_RTR_TO_BOM.gas",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	F.Intrinsic.Control.End
+Function.Intrinsic.Control.EndIf
+
+
+Program.Sub.Unload.End
+
+Program.Sub.Comments.Start
+${$0$}$GCG_RM_RTR_TO_BOM.$}$WAW$}$6/15/2015
+Program.Sub.Comments.End
+
